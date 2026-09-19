@@ -391,4 +391,5 @@ module.exports = {
   runRoutineDispatch,
   runRecurringDispatch,
   runEmiDispatch,
+  sendTextBeeSms,
 };
