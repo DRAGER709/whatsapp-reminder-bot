@@ -11,7 +11,7 @@ const { analyzeMessage } = require("./gemini");
 const { searchWeb } = require("./search");
 const { getUsage, ensureRowExists, LIMITS } = require("./usage");
 const { version } = require("../package.json");
-const { getHeartbeats, runReminderDispatch, runRoutineDispatch, runRecurringDispatch, runEmiDispatch } = require("./scheduler");
+const { getHeartbeats, runReminderDispatch, runRoutineDispatch, runRecurringDispatch, runEmiDispatch, sendTextBeeSms } = require("./scheduler");
 
 // Prevent unhandled rejections/exceptions from crashing the process and killing cron jobs
 process.on("uncaughtException", (err) => {
@@ -158,6 +158,37 @@ app.get("/api/ping", async (req, res) => {
 // to all unique phone numbers currently stored in emi_reminders.
 // ---------------------------------------------------------
 
+
+// ---------------------------------------------------------
+// TEMPORARY EMI SMS TEST — remove after test
+// ---------------------------------------------------------
+app.get("/api/test-emi-sms", async (req, res) => {
+  const incoming = req.query.secret || req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || incoming !== process.env.CRON_SECRET) {
+    return res.sendStatus(403);
+  }
+
+  try {
+    const { data: emis, error } = await supabase
+      .from("emi_reminders")
+      .select("phone")
+      .eq("is_active", true);
+
+    if (error) throw error;
+
+    const phones = [...new Set((emis || []).map((row) => row.phone).filter(Boolean))];
+    const message = "🧪 TEST EMI Reminder — Kotak Bank\n₹56,513 EMI is due in 2 days.\nThis is a test message.";
+
+    for (const phone of phones) {
+      await sendTextBeeSms(phone, message);
+    }
+
+    res.json({ ok: true, recipients: phones.length });
+  } catch (err) {
+    console.error("[test-emi] SMS test failed:", err.message);
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
 
 // ---------------------------------------------------------
 // TICK — External cron trigger
