@@ -157,67 +157,7 @@ app.get("/api/ping", async (req, res) => {
 // Protected by CRON_SECRET. Sends the real TextBee test format
 // to all unique phone numbers currently stored in emi_reminders.
 // ---------------------------------------------------------
-app.get("/api/test-emi-sms", async (req, res) => {
-  const incoming = req.query.secret || req.headers["x-cron-secret"];
-  if (!process.env.CRON_SECRET || incoming !== process.env.CRON_SECRET) {
-    return res.sendStatus(403);
-  }
 
-  try {
-    const { data: emis, error } = await supabase
-      .from("emi_reminders")
-      .select("phone")
-      .eq("is_active", true);
-
-    if (error) throw error;
-
-    const phones = [...new Set((emis || []).map((row) => row.phone).filter(Boolean))];
-    if (!phones.length) return res.status(400).json({ ok: false, error: "No EMI phone numbers found" });
-
-    const message =
-      "🧪 TEST EMI Reminder — Kotak Bank\n" +
-      "₹56,513 EMI is due in 2 days.\n" +
-      "This is a test message.";
-
-    const results = [];
-    for (const phone of phones) {
-      try {
-        const response = await axios.post(
-          "https://api.textbee.dev/api/v1/gateway/send-sms",
-          {
-            recipients: [phone],
-            message,
-            ...(process.env.TEXTBEE_DEVICE_ID ? { deviceId: process.env.TEXTBEE_DEVICE_ID } : {}),
-          },
-          {
-            headers: {
-              "x-api-key": process.env.TEXTBEE_API_KEY,
-              "Content-Type": "application/json",
-            },
-            timeout: 15000,
-          }
-        );
-        results.push({ phone, ok: true, textbee: response.data });
-      } catch (err) {
-        results.push({
-          phone,
-          ok: false,
-          status: err.response?.status || null,
-          error: err.response?.data?.message || err.message,
-        });
-      }
-    }
-
-    res.status(results.every((r) => r.ok) ? 200 : 502).json({
-      ok: results.every((r) => r.ok),
-      recipients: phones.length,
-      results,
-    });
-  } catch (err) {
-    console.error("[test-emi] SMS test failed:", err.message);
-    res.status(500).json({ ok: false, error: "SMS test failed" });
-  }
-});
 
 // ---------------------------------------------------------
 // TICK — External cron trigger
