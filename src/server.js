@@ -876,7 +876,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.listen(process.env.PORT || 3000, async () => {
+app.listen(process.env.PORT || 3000, "0.0.0.0", async () => {
   console.log(`[server] Manvi v${version} running on port ${process.env.PORT || 3000}`);
 
   if (!process.env.WEBHOOK_APP_SECRET) {
