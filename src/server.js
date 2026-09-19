@@ -155,6 +155,7 @@ app.get("/api/ping", async (req, res) => {
 
 // ---------------------------------------------------------
 // TEMPORARY EMI SMS TEST — remove after test
+// Diagnostic endpoint kept temporarily while TextBee delivery is verified.
 // Protected by CRON_SECRET. Sends the real TextBee test format
 // to all unique phone numbers currently stored in emi_reminders.
 // ---------------------------------------------------------
