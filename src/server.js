@@ -179,23 +179,40 @@ app.get("/api/test-emi-sms", async (req, res) => {
       "₹56,513 EMI is due in 2 days.\n" +
       "This is a test message.";
 
-    const response = await axios.post(
-      "https://api.textbee.dev/api/v1/gateway/send-sms",
-      {
-        recipients: phones,
-        message,
-        ...(process.env.TEXTBEE_DEVICE_ID ? { deviceId: process.env.TEXTBEE_DEVICE_ID } : {}),
-      },
-      {
-        headers: {
-          "x-api-key": process.env.TEXTBEE_API_KEY,
-          "Content-Type": "application/json",
-        },
-        timeout: 15000,
+    const results = [];
+    for (const phone of phones) {
+      try {
+        const response = await axios.post(
+          "https://api.textbee.dev/api/v1/gateway/send-sms",
+          {
+            recipients: [phone],
+            message,
+            ...(process.env.TEXTBEE_DEVICE_ID ? { deviceId: process.env.TEXTBEE_DEVICE_ID } : {}),
+          },
+          {
+            headers: {
+              "x-api-key": process.env.TEXTBEE_API_KEY,
+              "Content-Type": "application/json",
+            },
+            timeout: 15000,
+          }
+        );
+        results.push({ phone, ok: true, textbee: response.data });
+      } catch (err) {
+        results.push({
+          phone,
+          ok: false,
+          status: err.response?.status || null,
+          error: err.response?.data?.message || err.message,
+        });
       }
-    );
+    }
 
-    res.json({ ok: true, recipients: phones.length, textbee: response.data });
+    res.status(results.every((r) => r.ok) ? 200 : 502).json({
+      ok: results.every((r) => r.ok),
+      recipients: phones.length,
+      results,
+    });
   } catch (err) {
     console.error("[test-emi] SMS test failed:", err.message);
     res.status(500).json({ ok: false, error: "SMS test failed" });
