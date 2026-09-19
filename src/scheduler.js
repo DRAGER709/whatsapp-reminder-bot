@@ -203,19 +203,44 @@ async function runRecurringDispatch() {
 
 async function sendTextBeeSms(phone, message) {
   if (!process.env.TEXTBEE_API_KEY) throw new Error("TEXTBEE_API_KEY is not configured");
-  const response = await axios.post(
-    "https://api.textbee.dev/api/v1/gateway/send-sms",
-    {
-      recipients: [phone],
-      message,
-      ...(process.env.TEXTBEE_DEVICE_ID ? { deviceId: process.env.TEXTBEE_DEVICE_ID } : {}),
-    },
-    {
-      headers: { "x-api-key": process.env.TEXTBEE_API_KEY, "Content-Type": "application/json" },
+
+  const body = JSON.stringify({
+    recipients: [phone],
+    message,
+    ...(process.env.TEXTBEE_DEVICE_ID ? { deviceId: process.env.TEXTBEE_DEVICE_ID } : {}),
+  });
+
+  return new Promise((resolve, reject) => {
+    const https = require("https");
+    const request = https.request({
+      hostname: "api.textbee.dev",
+      path: "/api/v1/gateway/send-sms",
+      method: "POST",
+      headers: {
+        "x-api-key": process.env.TEXTBEE_API_KEY,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      },
       timeout: 15000,
-    }
-  );
-  return response.data;
+    }, (response) => {
+      let raw = "";
+      response.on("data", (chunk) => { raw += chunk; });
+      response.on("end", () => {
+        let parsed = {};
+        try { parsed = JSON.parse(raw); } catch (_) {}
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          resolve(parsed);
+        } else {
+          reject(new Error(`TextBee HTTP ${response.statusCode}: ${parsed.message || raw || response.statusMessage}`));
+        }
+      });
+    });
+
+    request.on("timeout", () => request.destroy(new Error("TextBee request timed out")));
+    request.on("error", reject);
+    request.write(body);
+    request.end();
+  });
 }
 
 function nextMonthlyDueAt(dueAt, now = new Date()) {
