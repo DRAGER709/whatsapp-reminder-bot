@@ -1,7 +1,8 @@
 const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
-const axios = require("axios");\nconst https = require("https");
+const axios = require("axios");
+const https = require("https");
 const { performance } = require("perf_hooks");
 require("dotenv").config();
 
