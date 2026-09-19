@@ -1,7 +1,7 @@
 const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
-const axios = require("axios");
+const axios = require("axios");\nconst https = require("https");
 const { performance } = require("perf_hooks");
 require("dotenv").config();
 
@@ -171,26 +171,54 @@ app.get("/api/test-emi-sms", async (req, res) => {
   // Diagnostic test: report exactly which stage fails without exposing secrets or phone numbers.
   let emis;
   try {
-    const result = await supabase
-      .from("emi_reminders")
-      .select("phone")
-      .eq("is_active", true);
+    // Use native HTTPS for this diagnostic so we can distinguish a Supabase SDK/fetch
+    // transport problem from a Supabase REST/network problem.
+    const supabaseUrl = new URL(process.env.SUPABASE_URL);
+    const requestPath = `/rest/v1/emi_reminders?select=phone&is_active=eq.true`;
 
-    if (result.error) {
-      console.error("[test-emi] Supabase lookup failed:", result.error);
+    const response = await new Promise((resolve, reject) => {
+      const request = https.request({
+        protocol: supabaseUrl.protocol,
+        hostname: supabaseUrl.hostname,
+        port: supabaseUrl.port || 443,
+        path: requestPath,
+        method: "GET",
+        headers: {
+          apikey: process.env.SUPABASE_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+          Accept: "application/json",
+        },
+      }, (upstream) => {
+        let body = "";
+        upstream.setEncoding("utf8");
+        upstream.on("data", (chunk) => { body += chunk; });
+        upstream.on("end", () => resolve({
+          statusCode: upstream.statusCode,
+          body,
+        }));
+      });
+
+      request.on("error", reject);
+      request.setTimeout(10000, () => request.destroy(new Error("Supabase HTTPS request timed out")));
+      request.end();
+    });
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      console.error("[test-emi] Native Supabase REST failed:", response.statusCode, response.body.slice(0, 500));
       return res.status(502).json({
         ok: false,
-        stage: "supabase_lookup",
-        error: result.error.message || String(result.error),
+        stage: "supabase_native_rest",
+        statusCode: response.statusCode,
+        error: response.body.slice(0, 300),
       });
     }
 
-    emis = result.data || [];
+    emis = JSON.parse(response.body || "[]");
   } catch (err) {
-    console.error("[test-emi] Supabase lookup threw:", err);
+    console.error("[test-emi] Native Supabase REST threw:", err);
     return res.status(502).json({
       ok: false,
-      stage: "supabase_lookup",
+      stage: "supabase_native_rest",
       error: err.message || String(err),
     });
   }
