@@ -10,7 +10,7 @@ const { analyzeMessage } = require("./gemini");
 const { searchWeb } = require("./search");
 const { getUsage, ensureRowExists, LIMITS } = require("./usage");
 const { version } = require("../package.json");
-const { getHeartbeats, runReminderDispatch, runRoutineDispatch, runRecurringDispatch } = require("./scheduler");
+const { getHeartbeats, runReminderDispatch, runRoutineDispatch, runRecurringDispatch, runEmiDispatch } = require("./scheduler");
 
 // Prevent unhandled rejections/exceptions from crashing the process and killing cron jobs
 process.on("uncaughtException", (err) => {
@@ -176,6 +176,7 @@ app.get("/api/tick", async (req, res) => {
     runReminderDispatch(),
     runRoutineDispatch(),
     runRecurringDispatch(),
+    runEmiDispatch(),
   ]);
 
   res.json({ ok: true, timestamp: new Date().toISOString() });
@@ -208,7 +209,7 @@ app.get("/api/status", async (req, res) => {
     // Skip check if process just started (< 10 min uptime) — first tick hasn't fired yet.
     const CRON_STALE_MS = 10 * 60 * 1000;
     const now = Date.now();
-    const minuteJobNames = ["Reminder Dispatch", "Routine Dispatch", "Recurring Task Dispatch"];
+    const minuteJobNames = ["Reminder Dispatch", "Routine Dispatch", "Recurring Task Dispatch", "EMI Dispatch"];
     const cronHealthy = uptimeSeconds < 600
       ? true
       : minuteJobNames.every((name) => {
@@ -248,6 +249,14 @@ app.get("/api/status", async (req, res) => {
         layman: "The Calendar: Handles weekly and monthly recurring reminders like rent or trash day.",
         status: "scheduled",
         lastFired: dbJobs?.find(j => j.job_name === 'Recurring Task Dispatch')?.last_fired || heartbeats['Recurring Task Dispatch']
+      },
+      {
+        name: "EMI Dispatch",
+        schedule: "* * * * *",
+        description: "Sends EMI SMS alerts 48 hours and 24 hours before each due date",
+        layman: "The EMI Watcher: sends two SMS alerts before each monthly EMI and rolls the due date forward.",
+        status: "scheduled",
+        lastFired: dbJobs?.find(j => j.job_name === "EMI Dispatch")?.last_fired || heartbeats["EMI Dispatch"]
       },
       {
         name: "Event Alert",

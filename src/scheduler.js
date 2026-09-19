@@ -1,5 +1,6 @@
 require("dotenv").config();
 const cron = require("node-cron");
+const axios = require("axios");
 const sendWhatsAppMessage = require("./sendMessage");
 const supabase = require("./supabase");
 const { ensureRowExists } = require("./usage");
@@ -43,6 +44,7 @@ function getISTComponents() {
 let reminderRunning = false;
 let routineRunning = false;
 let recurringRunning = false;
+let emiRunning = false;
 let eventAlertRunning = false;
 
 // Heartbeat tracking (in-memory fallback for dashboard)
@@ -50,6 +52,7 @@ const lastHeartbeats = {
   "Reminder Dispatch": null,
   "Routine Dispatch": null,
   "Recurring Task Dispatch": null,
+  "EMI Dispatch": null,
   "Event Alert": null,
 };
 
@@ -197,6 +200,107 @@ async function runRecurringDispatch() {
   }
 }
 
+
+async function sendTextBeeSms(phone, message) {
+  if (!process.env.TEXTBEE_API_KEY) throw new Error("TEXTBEE_API_KEY is not configured");
+  const response = await axios.post(
+    "https://api.textbee.dev/api/v1/gateway/send-sms",
+    {
+      recipients: [phone],
+      message,
+      ...(process.env.TEXTBEE_DEVICE_ID ? { deviceId: process.env.TEXTBEE_DEVICE_ID } : {}),
+    },
+    {
+      headers: { "x-api-key": process.env.TEXTBEE_API_KEY, "Content-Type": "application/json" },
+      timeout: 15000,
+    }
+  );
+  return response.data;
+}
+
+function nextMonthlyDueAt(dueAt, now = new Date()) {
+  const due = new Date(dueAt);
+  const clock = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(due);
+  const p = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(now);
+  const year = Number(p.find(x => x.type === "year").value);
+  const month = Number(p.find(x => x.type === "month").value);
+  const originalDay = Number(new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata", day: "2-digit"
+  }).format(due));
+  const days = (y,m) => new Date(Date.UTC(y,m,0)).getUTCDate();
+  let y=year, m=month;
+  let day=Math.min(originalDay, days(y,m));
+  let candidate=new Date(`${y}-${String(m).padStart(2,"0")}-${String(day).padStart(2,"0")}T${clock}:00+05:30`);
+  if (candidate <= now) {
+    m++;
+    if (m===13) {m=1; y++;}
+    day=Math.min(originalDay, days(y,m));
+    candidate=new Date(`${y}-${String(m).padStart(2,"0")}-${String(day).padStart(2,"0")}T${clock}:00+05:30`);
+  }
+  return candidate;
+}
+
+async function runEmiDispatch() {
+  if (emiRunning) return;
+  emiRunning = true;
+  try {
+    const now = new Date();
+    const nowMs = now.getTime();
+    const { data, error } = await supabase.from("emi_reminders").select("*").eq("is_active", true);
+    if (error) throw error;
+
+    for (const emi of data || []) {
+      const dueMs = new Date(emi.due_at).getTime();
+      if (!Number.isFinite(dueMs)) continue;
+
+      const checks = [
+        { hours:48, field:"last_48h_sent_for_due", text:`🔔 EMI Reminder — ${emi.lender_name}\n₹${Number(emi.amount).toLocaleString("en-IN")} EMI is due in 48 hours.` },
+        { hours:24, field:"last_24h_sent_for_due", text:`⏰ EMI Reminder — ${emi.lender_name}\n₹${Number(emi.amount).toLocaleString("en-IN")} EMI is due in 24 hours.` },
+      ];
+
+      for (const check of checks) {
+        const targetMs = dueMs - check.hours*60*60*1000;
+        if (nowMs < targetMs || nowMs >= targetMs + 10*60*1000) continue;
+        if (emi[check.field] && new Date(emi[check.field]).getTime() === dueMs) continue;
+
+        const { data: claimed, error: claimError } = await supabase.from("emi_reminders")
+          .update({ [check.field]: emi.due_at, updated_at: new Date().toISOString() })
+          .eq("id", emi.id).eq("is_active", true).is(check.field, null).select("id");
+        if (claimError) throw claimError;
+        if (!claimed?.length) continue;
+
+        try {
+          await sendTextBeeSms(emi.phone, check.text);
+        } catch (err) {
+          await supabase.from("emi_reminders")
+            .update({ [check.field]: null, updated_at: new Date().toISOString() })
+            .eq("id", emi.id);
+          console.error(`[emi] SMS failed for ${emi.id} (${check.hours}h):`, err.message);
+        }
+      }
+
+      if (nowMs >= dueMs) {
+        const nextDue = nextMonthlyDueAt(emi.due_at, now);
+        await supabase.from("emi_reminders").update({
+          due_at: nextDue.toISOString(),
+          last_48h_sent_for_due: null,
+          last_24h_sent_for_due: null,
+          updated_at: new Date().toISOString(),
+        }).eq("id", emi.id);
+      }
+    }
+  } catch (err) {
+    console.error("[emi] Dispatch error:", err.message);
+  } finally {
+    emiRunning = false;
+    await recordHeartbeat("EMI Dispatch");
+  }
+}
+
 // -----------------------------------------------------------------------
 // Cron jobs — fire every minute.
 // /api/tick calls the same functions when the process wakes from sleep.
@@ -205,6 +309,7 @@ async function runRecurringDispatch() {
 cron.schedule("* * * * *", runReminderDispatch);
 cron.schedule("* * * * *", runRoutineDispatch);
 cron.schedule("* * * * *", runRecurringDispatch);
+cron.schedule("* * * * *", runEmiDispatch);
 
 // Special event alerts — 08:30 IST (03:00 UTC). Cron-only to avoid duplicates.
 cron.schedule("0 3 * * *", async () => {
@@ -245,4 +350,5 @@ module.exports = {
   runReminderDispatch,
   runRoutineDispatch,
   runRecurringDispatch,
+  runEmiDispatch,
 };
