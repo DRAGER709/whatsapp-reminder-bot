@@ -2,7 +2,6 @@ const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
 const axios = require("axios");
-const https = require("https");
 const { performance } = require("perf_hooks");
 require("dotenv").config();
 
@@ -12,7 +11,7 @@ const { analyzeMessage } = require("./gemini");
 const { searchWeb } = require("./search");
 const { getUsage, ensureRowExists, LIMITS } = require("./usage");
 const { version } = require("../package.json");
-const { getHeartbeats, runReminderDispatch, runRoutineDispatch, runRecurringDispatch, runEmiDispatch, sendTextBeeSms } = require("./scheduler");
+const { getHeartbeats, runReminderDispatch, runRoutineDispatch, runRecurringDispatch, runEmiDispatch } = require("./scheduler");
 
 // Prevent unhandled rejections/exceptions from crashing the process and killing cron jobs
 process.on("uncaughtException", (err) => {
@@ -151,98 +150,6 @@ app.get("/api/ping", async (req, res) => {
     latency_ms: latency,
     timestamp: new Date().toISOString(),
   });
-});
-
-// ---------------------------------------------------------
-// TEMPORARY EMI SMS TEST — remove after test
-// Diagnostic endpoint kept temporarily while TextBee delivery is verified.
-// Protected by CRON_SECRET. Sends the real TextBee test format
-// to all unique phone numbers currently stored in emi_reminders.
-// ---------------------------------------------------------
-
-
-// ---------------------------------------------------------
-// TEMPORARY EMI SMS TEST — remove after test
-// ---------------------------------------------------------
-app.get("/api/test-emi-sms", async (req, res) => {
-  const incoming = req.query.secret || req.headers["x-cron-secret"];
-  if (!process.env.CRON_SECRET || incoming !== process.env.CRON_SECRET) {
-    return res.sendStatus(403);
-  }
-
-  // Diagnostic test: report exactly which stage fails without exposing secrets or phone numbers.
-  let emis;
-  try {
-    // Use native HTTPS for this diagnostic so we can distinguish a Supabase SDK/fetch
-    // transport problem from a Supabase REST/network problem.
-    const supabaseUrl = new URL(process.env.SUPABASE_URL);
-    const requestPath = `/rest/v1/emi_reminders?select=phone&is_active=eq.true`;
-
-    const response = await new Promise((resolve, reject) => {
-      const request = https.request({
-        protocol: supabaseUrl.protocol,
-        hostname: supabaseUrl.hostname,
-        port: supabaseUrl.port || 443,
-        path: requestPath,
-        method: "GET",
-        headers: {
-          apikey: process.env.SUPABASE_KEY,
-          Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-          Accept: "application/json",
-        },
-      }, (upstream) => {
-        let body = "";
-        upstream.setEncoding("utf8");
-        upstream.on("data", (chunk) => { body += chunk; });
-        upstream.on("end", () => resolve({
-          statusCode: upstream.statusCode,
-          body,
-        }));
-      });
-
-      request.on("error", reject);
-      request.setTimeout(10000, () => request.destroy(new Error("Supabase HTTPS request timed out")));
-      request.end();
-    });
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      console.error("[test-emi] Native Supabase REST failed:", response.statusCode, response.body.slice(0, 500));
-      return res.status(502).json({
-        ok: false,
-        stage: "supabase_native_rest",
-        statusCode: response.statusCode,
-        error: response.body.slice(0, 300),
-      });
-    }
-
-    emis = JSON.parse(response.body || "[]");
-  } catch (err) {
-    console.error("[test-emi] Native Supabase REST threw:", err);
-    return res.status(502).json({
-      ok: false,
-      stage: "supabase_native_rest",
-      error: err.message || String(err),
-    });
-  }
-
-  const phones = [...new Set(emis.map((row) => row.phone).filter(Boolean))];
-  const message = "🧪 TEST EMI Reminder — Kotak Bank\n₹56,513 EMI is due in 2 days.\nThis is a test message.";
-
-  try {
-    for (const phone of phones) {
-      await sendTextBeeSms(phone, message);
-    }
-
-    res.json({ ok: true, stage: "textbee_send", recipients: phones.length });
-  } catch (err) {
-    console.error("[test-emi] TextBee send failed:", err);
-    res.status(502).json({
-      ok: false,
-      stage: "textbee_send",
-      recipients: phones.length,
-      error: err.message || String(err),
-    });
-  }
 });
 
 // ---------------------------------------------------------
