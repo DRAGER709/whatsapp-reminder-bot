@@ -140,6 +140,8 @@ async function replyAndLog(phone, name, incomingMsg, botReply) {
 // /api/ping — monitored by UptimeRobot every 5 min
 // Returns 200 when healthy, 500 when Supabase is unreachable
 // ---------------------------------------------------------
+app.get("/health", (req, res) => { res.status(200).json({ status: "ok" }); });
+
 app.get("/api/ping", async (req, res) => {
   const start = performance.now();
   const { error } = await supabase.from("api_usage").select("usage_date").limit(1);
