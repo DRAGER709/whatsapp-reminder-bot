@@ -257,13 +257,28 @@ async function runEmiDispatch() {
       const dueMs = new Date(emi.due_at).getTime();
       if (!Number.isFinite(dueMs)) continue;
 
+      // Reminder times are fixed at 10:00 AM IST on the calendar date
+      // that is 48h/24h before the EMI due date. The actual EMI due time is ignored.
+      const dueParts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+      }).formatToParts(new Date(emi.due_at));
+      const dueYear = dueParts.find(p => p.type === "year").value;
+      const dueMonth = dueParts.find(p => p.type === "month").value;
+      const dueDay = dueParts.find(p => p.type === "day").value;
+
+      const reminderTarget = (daysBefore) => {
+        const date = new Date(`${dueYear}-${dueMonth}-${dueDay}T10:00:00+05:30`);
+        date.setTime(date.getTime() - daysBefore * 24 * 60 * 60 * 1000);
+        return date.getTime();
+      };
+
       const checks = [
-        { hours:48, field:"last_48h_sent_for_due", text:`🔔 EMI Reminder — ${emi.lender_name}\n₹${Number(emi.amount).toLocaleString("en-IN")} EMI is due in 48 hours.` },
-        { hours:24, field:"last_24h_sent_for_due", text:`⏰ EMI Reminder — ${emi.lender_name}\n₹${Number(emi.amount).toLocaleString("en-IN")} EMI is due in 24 hours.` },
+        { daysBefore:2, field:"last_48h_sent_for_due", text:`🔔 EMI Reminder — ${emi.lender_name}\n₹${Number(emi.amount).toLocaleString("en-IN")} EMI is due in 2 days.` },
+        { daysBefore:1, field:"last_24h_sent_for_due", text:`⏰ EMI Reminder — ${emi.lender_name}\n₹${Number(emi.amount).toLocaleString("en-IN")} EMI is due tomorrow.` },
       ];
 
       for (const check of checks) {
-        const targetMs = dueMs - check.hours*60*60*1000;
+        const targetMs = reminderTarget(check.daysBefore);
         if (nowMs < targetMs || nowMs >= targetMs + 10*60*1000) continue;
         if (emi[check.field] && new Date(emi[check.field]).getTime() === dueMs) continue;
 
