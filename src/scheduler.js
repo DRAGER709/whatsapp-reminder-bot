@@ -282,55 +282,75 @@ async function runEmiDispatch() {
       const dueMs = new Date(emi.due_at).getTime();
       if (!Number.isFinite(dueMs)) continue;
 
-      // Reminder times are fixed at 10:00 AM IST on the calendar date
-      // that is 48h/24h before the EMI due date. The actual EMI due time is ignored.
-      const dueParts = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
-      }).formatToParts(new Date(emi.due_at));
-      const dueYear = dueParts.find(p => p.type === "year").value;
-      const dueMonth = dueParts.find(p => p.type === "month").value;
-      const dueDay = dueParts.find(p => p.type === "day").value;
-
-      const reminderTarget = (daysBefore) => {
-        const date = new Date(`${dueYear}-${dueMonth}-${dueDay}T10:00:00+05:30`);
-        date.setTime(date.getTime() - daysBefore * 24 * 60 * 60 * 1000);
-        return date.getTime();
-      };
-
+      // Exactly two alerts per EMI cycle: 48 hours and 24 hours before due_at.
+      // Each alert has its own DB claim field, preventing duplicate sends even
+      // when cron and /api/tick run concurrently.
       const checks = [
-        { daysBefore:2, field:"last_48h_sent_for_due", text:`🔔 EMI Reminder — ${emi.lender_name}\n₹${Number(emi.amount).toLocaleString("en-IN")} EMI is due in 2 days.` },
-        { daysBefore:1, field:"last_24h_sent_for_due", text:`⏰ EMI Reminder — ${emi.lender_name}\n₹${Number(emi.amount).toLocaleString("en-IN")} EMI is due tomorrow.` },
+        {
+          hoursBefore: 48,
+          field: "last_48h_sent_for_due",
+          text: `🔔 EMI Reminder — ${emi.lender_name}
+₹${Number(emi.amount).toLocaleString("en-IN")} EMI is due in 48 hours.`,
+        },
+        {
+          hoursBefore: 24,
+          field: "last_24h_sent_for_due",
+          text: `⏰ EMI Reminder — ${emi.lender_name}
+₹${Number(emi.amount).toLocaleString("en-IN")} EMI is due in 24 hours.`,
+        },
       ];
 
       for (const check of checks) {
-        const targetMs = reminderTarget(check.daysBefore);
-        if (nowMs < targetMs || nowMs >= targetMs + 10*60*1000) continue;
+        const targetMs = dueMs - check.hoursBefore * 60 * 60 * 1000;
+
+        // Exact target with a 10-minute grace window. Outside it, do nothing.
+        if (nowMs < targetMs || nowMs >= targetMs + 10 * 60 * 1000) continue;
+
+        // Already sent for this exact due_at cycle.
         if (emi[check.field] && new Date(emi[check.field]).getTime() === dueMs) continue;
 
-        const { data: claimed, error: claimError } = await supabase.from("emi_reminders")
-          .update({ [check.field]: emi.due_at, updated_at: new Date().toISOString() })
-          .eq("id", emi.id).eq("is_active", true).is(check.field, null).select("id");
+        // Atomic claim: only one scheduler invocation can win.
+        const { data: claimed, error: claimError } = await supabase
+          .from("emi_reminders")
+          .update({
+            [check.field]: emi.due_at,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", emi.id)
+          .eq("is_active", true)
+          .is(check.field, null)
+          .select("id");
+
         if (claimError) throw claimError;
         if (!claimed?.length) continue;
 
         try {
           await sendTextBeeSms(emi.phone, check.text);
         } catch (err) {
-          await supabase.from("emi_reminders")
+          // Retry only if the SMS provider actually reports failure.
+          await supabase
+            .from("emi_reminders")
             .update({ [check.field]: null, updated_at: new Date().toISOString() })
-            .eq("id", emi.id);
-          console.error(`[emi] SMS failed for ${emi.id} (${check.hours}h):`, err.message);
+            .eq("id", emi.id)
+            .eq(check.field, emi.due_at);
+
+          console.error(`[emi] SMS failed for ${emi.id} (${check.hoursBefore}h):`, err.message);
         }
       }
 
+      // Advance to the next monthly cycle only after this EMI is due.
       if (nowMs >= dueMs) {
         const nextDue = nextMonthlyDueAt(emi.due_at, now);
-        await supabase.from("emi_reminders").update({
-          due_at: nextDue.toISOString(),
-          last_48h_sent_for_due: null,
-          last_24h_sent_for_due: null,
-          updated_at: new Date().toISOString(),
-        }).eq("id", emi.id);
+        await supabase
+          .from("emi_reminders")
+          .update({
+            due_at: nextDue.toISOString(),
+            last_48h_sent_for_due: null,
+            last_24h_sent_for_due: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", emi.id)
+          .eq("due_at", emi.due_at);
       }
     }
   } catch (err) {
@@ -340,7 +360,6 @@ async function runEmiDispatch() {
     await recordHeartbeat("EMI Dispatch");
   }
 }
-
 // -----------------------------------------------------------------------
 // Cron jobs — fire every minute.
 // /api/tick calls the same functions when the process wakes from sleep.
