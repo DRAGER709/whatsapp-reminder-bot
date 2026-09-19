@@ -168,25 +168,50 @@ app.get("/api/test-emi-sms", async (req, res) => {
     return res.sendStatus(403);
   }
 
+  // Diagnostic test: report exactly which stage fails without exposing secrets or phone numbers.
+  let emis;
   try {
-    const { data: emis, error } = await supabase
+    const result = await supabase
       .from("emi_reminders")
       .select("phone")
       .eq("is_active", true);
 
-    if (error) throw error;
+    if (result.error) {
+      console.error("[test-emi] Supabase lookup failed:", result.error);
+      return res.status(502).json({
+        ok: false,
+        stage: "supabase_lookup",
+        error: result.error.message || String(result.error),
+      });
+    }
 
-    const phones = [...new Set((emis || []).map((row) => row.phone).filter(Boolean))];
-    const message = "🧪 TEST EMI Reminder — Kotak Bank\n₹56,513 EMI is due in 2 days.\nThis is a test message.";
+    emis = result.data || [];
+  } catch (err) {
+    console.error("[test-emi] Supabase lookup threw:", err);
+    return res.status(502).json({
+      ok: false,
+      stage: "supabase_lookup",
+      error: err.message || String(err),
+    });
+  }
 
+  const phones = [...new Set(emis.map((row) => row.phone).filter(Boolean))];
+  const message = "🧪 TEST EMI Reminder — Kotak Bank\n₹56,513 EMI is due in 2 days.\nThis is a test message.";
+
+  try {
     for (const phone of phones) {
       await sendTextBeeSms(phone, message);
     }
 
-    res.json({ ok: true, recipients: phones.length });
+    res.json({ ok: true, stage: "textbee_send", recipients: phones.length });
   } catch (err) {
-    console.error("[test-emi] SMS test failed:", err.message);
-    res.status(502).json({ ok: false, error: err.message });
+    console.error("[test-emi] TextBee send failed:", err);
+    res.status(502).json({
+      ok: false,
+      stage: "textbee_send",
+      recipients: phones.length,
+      error: err.message || String(err),
+    });
   }
 });
 
