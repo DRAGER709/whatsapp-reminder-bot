@@ -145,6 +145,7 @@ app.get("/health", (req, res) => { res.status(200).json({ status: "ok" }); });
 app.get("/api/ping", async (req, res) => {
   const start = performance.now();
   const { error } = await supabase.from("api_usage").select("usage_date").limit(1);
+  if (error) console.error("[health] /api/ping Supabase error:", { message: error.message, code: error.code, details: error.details, hint: error.hint });
   const latency = Math.round(performance.now() - start);
 
   res.status(error ? 500 : 200).json({
